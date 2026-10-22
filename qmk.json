@@ -1,0 +1,6 @@
+{
+    "userspace_version": "1.0",
+    "build_targets": [
+        ["planck/rev6_drop", "dictation_hid"]
+    ]
+}

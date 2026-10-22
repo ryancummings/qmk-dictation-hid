@@ -1,0 +1,176 @@
+QMK patch: a joystick interface with a custom HID report descriptor.
+
+Lets a keymap replace QMK's joystick report descriptor (JOYSTICK_REPORT_DESCRIPTOR),
+keep the joystick on its own interface and endpoint with no report ID
+(JOYSTICK_OWN_EP = yes), set its endpoint size and polling interval, and receive the
+output and feature reports the host sends with SET_REPORT (joystick_receive_report).
+Feature reads (GET_REPORT) return the last feature report set, or what the keymap set
+with joystick_set_feature_reply. ChibiOS (ARM) boards only.
+
+Made against qmk_firmware master 7a1bbf37c5c07da4ea0a162bb139083a46ef40a1
+(2026-10-02). Apply from the root of your QMK checkout:
+
+    git apply /path/to/0001-joystick-custom-hid-interface.patch
+
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff --git a/tmk_core/protocol.mk b/tmk_core/protocol.mk
+index 81520c1b..2d84a5d8 100644
+--- a/tmk_core/protocol.mk
++++ b/tmk_core/protocol.mk
+@@ -65,9 +65,13 @@ endif
+ 
+ ifeq ($(strip $(JOYSTICK_ENABLE)), yes)
+     OPT_DEFS += -DJOYSTICK_ENABLE
+-    ifeq ($(strip $(SHARED_EP_ENABLE)), yes)
+-        OPT_DEFS += -DJOYSTICK_SHARED_EP
+-        SHARED_EP_ENABLE = yes
++    # JOYSTICK_OWN_EP = yes keeps the joystick on its own interface and endpoint, with
++    # no report ID, even when other reports share an endpoint.
++    ifneq ($(strip $(JOYSTICK_OWN_EP)), yes)
++        ifeq ($(strip $(SHARED_EP_ENABLE)), yes)
++            OPT_DEFS += -DJOYSTICK_SHARED_EP
++            SHARED_EP_ENABLE = yes
++        endif
+     endif
+ endif
+ 
+diff --git a/tmk_core/protocol/chibios/usb_main.c b/tmk_core/protocol/chibios/usb_main.c
+index 5939e327..43e79663 100644
+--- a/tmk_core/protocol/chibios/usb_main.c
++++ b/tmk_core/protocol/chibios/usb_main.c
+@@ -233,6 +233,51 @@ static void usb_event_cb(USBDriver *usbp, usbevent_t event) {
+ 
+ static uint8_t _Alignas(4) set_report_buf[2];
+ 
++#if defined(JOYSTICK_ENABLE) && defined(JOYSTICK_REPORT_DESCRIPTOR)
++// Output and feature reports the host sends the custom joystick interface with
++// SET_REPORT. The callback runs in the USB interrupt, so it only records the report;
++// the keymap reads it from the main loop with joystick_receive_report(). A feature
++// report read back (GET_REPORT) returns the last one the host set, zeros at first,
++// or what the keymap set since with joystick_set_feature_reply().
++static uint8_t _Alignas(4) joystick_set_report_buf[JOYSTICK_HOST_REPORT_SIZE];
++static uint8_t _Alignas(4) joystick_feature_buf[JOYSTICK_HOST_REPORT_SIZE];
++static volatile uint8_t    joystick_set_report_length;
++static volatile uint8_t    joystick_set_report_type;
++
++static void joystick_set_report_cb(USBDriver *usbp) {
++    usb_control_request_t *setup = (usb_control_request_t *)usbp->setup;
++    uint8_t                length = setup->wLength < JOYSTICK_HOST_REPORT_SIZE ? setup->wLength : JOYSTICK_HOST_REPORT_SIZE;
++    if (setup->wValue.hbyte == 3) {
++        memcpy(joystick_feature_buf, joystick_set_report_buf, length);
++    }
++    joystick_set_report_type   = setup->wValue.hbyte;
++    joystick_set_report_length = length;
++}
++
++void joystick_set_feature_reply(const uint8_t *data, uint8_t length) {
++    if (length > JOYSTICK_HOST_REPORT_SIZE) {
++        length = JOYSTICK_HOST_REPORT_SIZE;
++    }
++    chSysLock();
++    memset(joystick_feature_buf, 0, sizeof(joystick_feature_buf));
++    memcpy(joystick_feature_buf, data, length);
++    chSysUnlock();
++}
++
++uint8_t joystick_receive_report(uint8_t *data, uint8_t size, uint8_t *type) {
++    chSysLock();
++    uint8_t length = joystick_set_report_length;
++    if (length > size) {
++        length = size;
++    }
++    memcpy(data, joystick_set_report_buf, length);
++    *type                      = joystick_set_report_type;
++    joystick_set_report_length = 0;
++    chSysUnlock();
++    return length;
++}
++#endif
++
+ static void set_led_transfer_cb(USBDriver *usbp) {
+     usb_control_request_t *setup = (usb_control_request_t *)usbp->setup;
+ 
+@@ -255,6 +300,12 @@ static bool usb_requests_hook_cb(USBDriver *usbp) {
+             case USB_RTYPE_DIR_DEV2HOST:
+                 switch (setup->bRequest) {
+                     case HID_REQ_GetReport:
++#if defined(JOYSTICK_ENABLE) && defined(JOYSTICK_REPORT_DESCRIPTOR) && defined(JOYSTICK_FEATURE_REPORT_SIZE)
++                        if (setup->wIndex == JOYSTICK_INTERFACE && setup->wValue.hbyte == 3) {
++                            usbSetupTransfer(usbp, joystick_feature_buf, setup->wLength < JOYSTICK_FEATURE_REPORT_SIZE ? setup->wLength : JOYSTICK_FEATURE_REPORT_SIZE, NULL);
++                            return true;
++                        }
++#endif
+                         return usb_get_report_cb(usbp);
+                     case HID_REQ_GetProtocol:
+                         if (setup->wIndex == KEYBOARD_INTERFACE) {
+@@ -279,6 +330,11 @@ static bool usb_requests_hook_cb(USBDriver *usbp) {
+ #endif
+                                 usbSetupTransfer(usbp, set_report_buf, sizeof(set_report_buf), set_led_transfer_cb);
+                                 return true;
++#if defined(JOYSTICK_ENABLE) && defined(JOYSTICK_REPORT_DESCRIPTOR)
++                            case JOYSTICK_INTERFACE:
++                                usbSetupTransfer(usbp, joystick_set_report_buf, setup->wLength < JOYSTICK_HOST_REPORT_SIZE ? setup->wLength : JOYSTICK_HOST_REPORT_SIZE, joystick_set_report_cb);
++                                return true;
++#endif
+                         }
+                         break;
+                     case HID_REQ_SetProtocol:
+diff --git a/tmk_core/protocol/usb_descriptor.c b/tmk_core/protocol/usb_descriptor.c
+index f83f3c6b..f95bc0ee 100644
+--- a/tmk_core/protocol/usb_descriptor.c
++++ b/tmk_core/protocol/usb_descriptor.c
+@@ -226,7 +226,12 @@ const USB_Descriptor_HIDReport_Datatype_t PROGMEM SharedReport[] = {
+ #    endif
+ #endif
+ 
+-#ifdef JOYSTICK_ENABLE
++#if defined(JOYSTICK_ENABLE) && defined(JOYSTICK_REPORT_DESCRIPTOR)
++#    ifdef JOYSTICK_SHARED_EP
++#        error "JOYSTICK_REPORT_DESCRIPTOR needs the joystick's own endpoint (JOYSTICK_OWN_EP = yes)"
++#    endif
++const USB_Descriptor_HIDReport_Datatype_t PROGMEM JoystickReport[] = {JOYSTICK_REPORT_DESCRIPTOR};
++#elif defined(JOYSTICK_ENABLE)
+ #    ifndef JOYSTICK_SHARED_EP
+ const USB_Descriptor_HIDReport_Datatype_t PROGMEM JoystickReport[] = {
+ #    elif !defined(SHARED_REPORT_STARTED)
+@@ -1122,7 +1127,7 @@ const USB_Descriptor_Configuration_t PROGMEM ConfigurationDescriptor = {
+         .EndpointAddress        = (ENDPOINT_DIR_IN | JOYSTICK_IN_EPNUM),
+         .Attributes             = (EP_TYPE_INTERRUPT | ENDPOINT_ATTR_NO_SYNC | ENDPOINT_USAGE_DATA),
+         .EndpointSize           = JOYSTICK_EPSIZE,
+-        .PollingIntervalMS      = USB_POLLING_INTERVAL_MS
++        .PollingIntervalMS      = JOYSTICK_POLLING_INTERVAL
+     },
+ #endif
+ 
+diff --git a/tmk_core/protocol/usb_descriptor.h b/tmk_core/protocol/usb_descriptor.h
+index 27058b7c..f68310cd 100644
+--- a/tmk_core/protocol/usb_descriptor.h
++++ b/tmk_core/protocol/usb_descriptor.h
+@@ -307,7 +307,25 @@ enum usb_endpoints {
+ #define MIDI_STREAM_EPSIZE 64
+ #define CDC_NOTIFICATION_EPSIZE 8
+ #define CDC_EPSIZE 16
+-#define JOYSTICK_EPSIZE 8
++// A keymap may set JOYSTICK_EPSIZE and JOYSTICK_POLLING_INTERVAL and supply
++// JOYSTICK_REPORT_DESCRIPTOR to present a specific device on the joystick's own
++// interface; QMK_JOYSTICK_CUSTOM marks support for these and for passing its output
++// and feature reports to the keymap (joystick_receive_report) and answering feature
++// reads (joystick_set_feature_reply).
++#define QMK_JOYSTICK_CUSTOM 1
++#ifndef JOYSTICK_EPSIZE
++#    define JOYSTICK_EPSIZE 8
++#endif
++#ifndef JOYSTICK_POLLING_INTERVAL
++#    define JOYSTICK_POLLING_INTERVAL USB_POLLING_INTERVAL_MS
++#endif
++// The largest output or feature report the host may set; JOYSTICK_FEATURE_REPORT_SIZE,
++// if set, is the size of the feature report it reads back.
++#ifndef JOYSTICK_HOST_REPORT_SIZE
++#    define JOYSTICK_HOST_REPORT_SIZE 64
++#endif
++uint8_t joystick_receive_report(uint8_t *data, uint8_t size, uint8_t *type);
++void    joystick_set_feature_reply(const uint8_t *data, uint8_t length);
+ #define DIGITIZER_EPSIZE 8
+ 
+ uint16_t get_usb_descriptor(const uint16_t wValue, const uint16_t wIndex, const uint16_t wLength, const void** const DescriptorAddress);
