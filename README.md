@@ -1,8 +1,41 @@
 # qmk-dictation-hid
 
-QMK firmware code that makes a keyboard present itself to the computer as a **Nuance
-PowerMic II-compatible** set of dictation buttons. Dictation software that supports the
-PowerMic II reads the buttons directly, with no driver or add-on on the computer.
+**Dictation-handset buttons on your own keyboard, for radiologists who dictate in
+PowerScribe 360.**
+
+This is for radiologists who use Nuance **PowerScribe 360** and want the buttons of a
+**PowerMic** or **Philips SpeechMike** (Dictate, Next field, Previous field, Enter,
+Backspace and the rest) on a keyboard or macro pad that runs QMK firmware, instead of on
+the handset in their hand.
+
+The board tells the computer it is a **Nuance PowerMic II**. PowerScribe 360 supports the
+PowerMic II itself, so it reads the board's buttons with **no driver, no add-on and no
+macro software** on the workstation. You choose what each button does in PowerScribe's
+own PowerMic settings, as you would for a real PowerMic. You keep dictating into your
+usual microphone.
+
+## Who this is for
+
+- You dictate reports in **PowerScribe 360** on Windows.
+- You want to press Dictate, Tab forward, Tab backward, Enter/Select and the other
+  PowerMic buttons on keys, for example with the hand that is not on the mouse or
+  trackball.
+- You use a **PowerMic** or a **SpeechMike** now. The board takes over the buttons; your
+  microphone keeps doing the audio. Without Philips' add-on a SpeechMike still works as a
+  plain USB microphone. In testing, PowerScribe recorded from a wireless lapel microphone
+  while the board supplied the buttons.
+- You can build and flash QMK firmware, or are willing to learn. The example is for a
+  Planck rev6; other ARM (ChibiOS) keyboards need small changes.
+
+**What about the SpeechMike?** The board copies a PowerMic II only. PowerScribe 360 reads
+SpeechMike buttons only through Philips' add-on, so a SpeechMike copy would still need that
+add-on installed (gotcha 12). If you use a SpeechMike, keep it as your microphone and put
+the PowerMic buttons on the board.
+
+**Other software:** PowerScribe One, Dragon and other dictation software were not tested.
+Any program that reads a PowerMic II may work, but there is no evidence here that it does.
+
+## What is in this repository
 
 The repository has three parts:
 
